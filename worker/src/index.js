@@ -174,15 +174,22 @@ export default {
       return response(request, env, JSON.stringify(data), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
     if (sessionMatch && request.method === "PUT") {
-      const session = await unseal(cookieValue(request, COOKIE), env);
-      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
-      try {
-        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-        if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
-        if (!member.roles.includes(SHOTCALLER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Shotcaller role required to edit this live map." }), 403, { "Content-Type": "application/json" });
-      } catch (e) {
-        if (e instanceof Response) throw e;
-        return response(request, env, JSON.stringify({ error: "Could not verify your Shotcaller role." }), 403, { "Content-Type": "application/json" });
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
+      const currentResponse = await stub.fetch("https://session.internal/state");
+      if (!currentResponse.ok) return response(request, env, JSON.stringify({ error: "Session not found." }), 404, { "Content-Type": "application/json" });
+      const current = await currentResponse.json();
+      let session = null;
+      if (current.visibility !== "public") {
+        session = await unseal(cookieValue(request, COOKIE), env);
+        if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
+        try {
+          const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
+          if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
+          if (!member.roles.includes(SHOTCALLER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Shotcaller role required to edit this live map." }), 403, { "Content-Type": "application/json" });
+        } catch (e) {
+          if (e instanceof Response) throw e;
+          return response(request, env, JSON.stringify({ error: "Could not verify your Shotcaller role." }), 403, { "Content-Type": "application/json" });
+        }
       }
       let body;
       try { body = await request.json(); } catch { return response(request, env, JSON.stringify({ error: "Invalid JSON body." }), 400, { "Content-Type": "application/json" }); }
@@ -194,8 +201,7 @@ export default {
         if (line && (!Number.isFinite(m.x2) || !Number.isFinite(m.y2) || m.x2 < 0 || m.x2 > 1200 || m.y2 < 0 || m.y2 > 760)) return response(request, env, JSON.stringify({ error: "Invalid line endpoint." }), 400, { "Content-Type": "application/json" });
         marks.push({ x: m.x, y: m.y, ...(line ? { x2: m.x2, y2: m.y2 } : {}), r: Number.isFinite(m.r) ? Math.max(4, Math.min(150, m.r)) : 48, size: Number.isFinite(m.size) ? Math.max(4, Math.min(150, m.size)) : 48, type: m.type });
       }
-      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
-      const result = await stub.fetch("https://session.internal/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marks, updatedAt: Date.now(), updatedBy: session.user.username || session.user.id }) });
+      const result = await stub.fetch("https://session.internal/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marks, updatedAt: Date.now(), updatedBy: session ? (session.user.username || session.user.id) : "Public link user" }) });
       return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
     if (url.pathname === "/publish" && request.method === "POST") {
