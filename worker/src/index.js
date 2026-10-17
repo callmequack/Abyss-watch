@@ -236,7 +236,15 @@ export default {
       const checked = await stub.fetch("https://session.internal/participant-auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokenHash: await hashCode(token), now: Date.now() }) });
       if (!checked.ok || (await checked.json()).role !== "owner") return response(request, env, JSON.stringify({ error: "Only the session owner can revoke participants." }), 403, { "Content-Type": "application/json" });
       const result = await stub.fetch("https://session.internal/participant-revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ participantId: targetId }) });
-      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      const revoked = await result.json().catch(() => ({}));
+      if (!result.ok) return response(request, env, JSON.stringify(revoked), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      let rotated = null;
+      if (["viewer", "shotcaller"].includes(revoked.inviteKind)) {
+        const code = randomCode(12);
+        const changed = await stub.fetch("https://session.internal/auth-rotate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: revoked.inviteKind, hash: await hashCode(code) }) });
+        if (changed.ok) rotated = { kind: revoked.inviteKind, code };
+      }
+      return response(request, env, JSON.stringify({ ok: true, rotated }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
     const sessionMatchAny = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})(?:\/codes)?$/i);
     if (sessionMatchAny && request.method === "GET" && !url.pathname.endsWith("/codes")) {
@@ -326,7 +334,8 @@ export class LiveSession {
       else if (data.codeHash && data.codeHash === auth.viewerHash) role = "viewer";
       if (!role) return Response.json({ error: "That invitation code is not valid." }, { status: 401 });
       const participants = await this.state.storage.get("participants") || {};
-      const participant = { id: data.participantId, name: String(data.name || "Guest").slice(0, 32), role, tokenHash: data.tokenHash, joinedAt: data.now || Date.now(), lastSeen: data.now || Date.now() };
+      const inviteKind = role === "owner" ? "owner" : role;
+      const participant = { id: data.participantId, name: String(data.name || "Guest").slice(0, 32), role, inviteKind, tokenHash: data.tokenHash, joinedAt: data.now || Date.now(), lastSeen: data.now || Date.now() };
       participants[participant.id] = participant;
       await this.state.storage.put("participants", participants);
       return Response.json({ participant: { id: participant.id, name: participant.name, role: participant.role, joinedAt: participant.joinedAt, lastSeen: participant.lastSeen } });
@@ -370,7 +379,7 @@ export class LiveSession {
       if (target.role === "owner") return Response.json({ error: "Owner access cannot be revoked from the roster." }, { status: 400 });
       delete participants[target.id];
       await this.state.storage.put("participants", participants);
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, inviteKind: target.inviteKind || (target.role === "shotcaller" ? "shotcaller" : "viewer") });
     }
     if (url.pathname === "/auth-init" && request.method === "POST") {
       if (await this.state.storage.get("sessionAuth")) return new Response("Already initialized", { status: 409 });
