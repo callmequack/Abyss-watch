@@ -146,23 +146,32 @@ export default {
         const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
         if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
       } catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
+      let body;
+      try { body = await request.json(); } catch { body = {}; }
+      const visibility = body.visibility === "public" ? "public" : "private";
       const id = crypto.randomUUID() + "-" + crypto.randomUUID().replace(/-/g, "");
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
-      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session.user.id, createdAt: Date.now() }) });
+      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session.user.id, createdAt: Date.now(), visibility }) });
       if (!created.ok) return response(request, env, JSON.stringify({ error: "Could not create the live session." }), 500, { "Content-Type": "application/json" });
       return response(request, env, JSON.stringify({ ok: true, id }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
     const sessionMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})$/i);
     if (sessionMatch && request.method === "GET") {
-      const session = await unseal(cookieValue(request, COOKIE), env);
-      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to view this live map." }), 401, { "Content-Type": "application/json" });
-      try {
-        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-        if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
-      } catch { return response(request, env, JSON.stringify({ error: "Could not verify your viewing role. Sign in again and try once more." }), 403, { "Content-Type": "application/json" }); }
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
       const result = await stub.fetch("https://session.internal/state");
-      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      const raw = await result.text();
+      if (!result.ok) return response(request, env, raw, result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      let data;
+      try { data = JSON.parse(raw); } catch { return response(request, env, JSON.stringify({ error: "Invalid session state." }), 500, { "Content-Type": "application/json" }); }
+      if (data.visibility !== "public") {
+        const session = await unseal(cookieValue(request, COOKIE), env);
+        if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to view this private live map." }), 401, { "Content-Type": "application/json" });
+        try {
+          const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
+          if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
+        } catch { return response(request, env, JSON.stringify({ error: "Could not verify your viewing role. Sign in again and try once more." }), 403, { "Content-Type": "application/json" }); }
+      }
+      return response(request, env, JSON.stringify(data), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
     if (sessionMatch && request.method === "PUT") {
       const session = await unseal(cookieValue(request, COOKIE), env);
@@ -224,7 +233,7 @@ export class LiveSession {
       if (current) return new Response(JSON.stringify({ error: "Already initialized" }), { status: 409 });
       let data = {};
       try { data = await request.json(); } catch {}
-      await this.state.storage.put("session", { marks: [], createdAt: data.createdAt || Date.now(), createdBy: data.createdBy || null, updatedAt: Date.now(), updatedBy: null });
+      await this.state.storage.put("session", { marks: [], visibility: data.visibility === "public" ? "public" : "private", createdAt: data.createdAt || Date.now(), createdBy: data.createdBy || null, updatedAt: Date.now(), updatedBy: null });
       return Response.json({ ok: true });
     }
     if (url.pathname === "/state" && request.method === "GET") {
