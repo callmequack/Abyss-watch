@@ -11,17 +11,9 @@ class_name = "LiveSession"
 name = "AUTH_SESSIONS"
 class_name = "AuthSessions"
 
-[[durable_objects.bindings]]
-name = "AUTH_SESSIONS"
-class_name = "AuthSessions"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveSession"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["AuthSessions"]
 
 [[migrations]]
 tag = "v2"
