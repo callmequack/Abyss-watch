@@ -148,7 +148,7 @@ export default {
       if (!created.ok) return response(request, env, JSON.stringify({ error: "Could not create the live session." }), 500, { "Content-Type": "application/json" });
       return response(request, env, JSON.stringify({ ok: true, id }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    const sessionMatch = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})$/i);
+    const sessionMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})$/i);
     if (sessionMatch && request.method === "GET") {
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
       const result = await stub.fetch("https://session.internal/state");
