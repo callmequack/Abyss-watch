@@ -3,6 +3,7 @@ const COOKIE = "abyss_session";
 const STATE_COOKIE = "abyss_oauth_state";
 const RETURN_COOKIE = "abyss_return_to";
 const SHOTCALLER_ROLE_ID = "1558500349835354242";
+const SESSION_VIEWER_ROLE_ID = "1558147579529797705";
 const SESSION_MARK_TYPES = new Set(["danger","star","diamond","dot","safe","navyLine","redLine"]);
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -128,20 +129,23 @@ export default {
     if (url.pathname === "/logout" && request.method === "POST") return response(request, env, JSON.stringify({ ok: true }), 200, { "Content-Type": "application/json", "Set-Cookie": cookie(COOKIE, "", 0) });
     if (url.pathname === "/me" && request.method === "GET") {
       const session = await unseal(cookieValue(request, COOKIE), env);
-      if (!session) return response(request, env, JSON.stringify({ authenticated: false }), 200, { "Content-Type": "application/json" });
+      if (!session) return response(request, env, JSON.stringify({ authenticated: false, canViewSessions: false, canShotcall: false }), 200, { "Content-Type": "application/json" });
       try {
         const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
         const roles = Array.isArray(member.roles) ? member.roles : [];
         const canPublish = roles.includes(env.POLICE_PATROL_ROLE_ID);
         const canShotcall = roles.includes(SHOTCALLER_ROLE_ID);
-        return response(request, env, JSON.stringify({ authenticated: true, user: session.user, canPublish, canShotcall }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-      } catch { return response(request, env, JSON.stringify({ authenticated: false, canPublish: false }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); }
+        const canViewSessions = roles.includes(SESSION_VIEWER_ROLE_ID);
+        return response(request, env, JSON.stringify({ authenticated: true, user: session.user, canPublish, canShotcall, canViewSessions }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      } catch { return response(request, env, JSON.stringify({ authenticated: false, canPublish: false, canViewSessions: false, canShotcall: false }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); }
     }
     if (url.pathname === "/sessions" && request.method === "POST") {
       const session = await unseal(cookieValue(request, COOKIE), env);
       if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to create a session." }), 401, { "Content-Type": "application/json" });
-      try { await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token); }
-      catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
+      try {
+        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
+        if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
+      } catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
       const id = crypto.randomUUID() + "-" + crypto.randomUUID().replace(/-/g, "");
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
       const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session.user.id, createdAt: Date.now() }) });
@@ -150,6 +154,12 @@ export default {
     }
     const sessionMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})$/i);
     if (sessionMatch && request.method === "GET") {
+      const session = await unseal(cookieValue(request, COOKIE), env);
+      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to view this live map." }), 401, { "Content-Type": "application/json" });
+      try {
+        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
+        if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
+      } catch { return response(request, env, JSON.stringify({ error: "Could not verify your viewing role. Sign in again and try once more." }), 403, { "Content-Type": "application/json" }); }
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
       const result = await stub.fetch("https://session.internal/state");
       return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -159,7 +169,8 @@ export default {
       if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
       try {
         const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-        if (!Array.isArray(member.roles) || !member.roles.includes(SHOTCALLER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Shotcaller role required to edit this live map." }), 403, { "Content-Type": "application/json" });
+        if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
+        if (!member.roles.includes(SHOTCALLER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Shotcaller role required to edit this live map." }), 403, { "Content-Type": "application/json" });
       } catch (e) {
         if (e instanceof Response) throw e;
         return response(request, env, JSON.stringify({ error: "Could not verify your Shotcaller role." }), 403, { "Content-Type": "application/json" });
