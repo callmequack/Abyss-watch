@@ -57,6 +57,17 @@ async function unseal(value, env) {
     return data;
   } catch { return null; }
 }
+function randomCode(bytes = 12) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const raw = crypto.getRandomValues(new Uint8Array(bytes));
+  let out = "";
+  for (const b of raw) out += alphabet[b % alphabet.length];
+  return out.match(/.{1,4}/g).join("-");
+}
+async function hashCode(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "").replace(/-/g, "").toUpperCase()));
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+}
 function cookie(name, value, maxAge) {
   return name + "=" + value + "; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=" + maxAge;
 }
@@ -144,56 +155,67 @@ export default {
       let body;
       try { body = await request.json(); } catch { body = {}; }
       const visibility = body.visibility === "public" ? "public" : "private";
-      let session = null;
-      if (visibility !== "public") {
-        session = await getSession(request, env);
-        if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to create a private session." }), 401, { "Content-Type": "application/json" });
-        try {
-          const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-          if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
-        } catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
-      }
       const id = crypto.randomUUID() + "-" + crypto.randomUUID().replace(/-/g, "");
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
-      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session ? session.user.id : null, createdAt: Date.now(), visibility }) });
+      const ownerKey = visibility === "private" ? randomCode(32) : null;
+      const viewerCode = visibility === "private" ? randomCode(12) : null;
+      const shotcallerCode = visibility === "private" ? randomCode(12) : null;
+      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: null, createdAt: Date.now(), visibility }) });
       if (!created.ok) return response(request, env, JSON.stringify({ error: "Could not create the live session." }), 500, { "Content-Type": "application/json" });
-      return response(request, env, JSON.stringify({ ok: true, id }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      if (visibility === "private") {
+        const saved = await stub.fetch("https://session.internal/auth-init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerHash: await hashCode(ownerKey), viewerHash: await hashCode(viewerCode), shotcallerHash: await hashCode(shotcallerCode) }) });
+        if (!saved.ok) return response(request, env, JSON.stringify({ error: "Could not secure session codes." }), 500, { "Content-Type": "application/json" });
+      }
+      return response(request, env, JSON.stringify({ ok: true, id, visibility, ...(visibility === "private" ? { ownerKey, viewerCode, shotcallerCode } : {}) }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    const sessionMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})$/i);
-    if (sessionMatch && request.method === "GET") {
-      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
+    const sessionMatch = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})$/i);
+    if (sessionMatch && url.pathname.endsWith("/codes") && request.method === "POST") {
+      const id = sessionMatch[1];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
+      const ownerKey = request.headers.get("X-Owner-Key") || "";
+      const auth = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerHash: await hashCode(ownerKey) }) });
+      if (!auth.ok) return response(request, env, JSON.stringify({ error: "Only the session owner can rotate invitation codes." }), 403, { "Content-Type": "application/json" });
+      let body;
+      try { body = await request.json(); } catch { body = {}; }
+      const kind = body.kind === "viewer" ? "viewer" : body.kind === "shotcaller" ? "shotcaller" : "";
+      if (!kind) return response(request, env, JSON.stringify({ error: "Choose viewer or shotcaller code." }), 400, { "Content-Type": "application/json" });
+      const code = randomCode(12);
+      const changed = await stub.fetch("https://session.internal/auth-rotate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, hash: await hashCode(code) }) });
+      if (!changed.ok) return response(request, env, JSON.stringify({ error: "Could not rotate the invitation code." }), 500, { "Content-Type": "application/json" });
+      return response(request, env, JSON.stringify({ ok: true, kind, code }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
+    const sessionMatchAny = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})(?:\\/codes)?$/i);
+    if (sessionMatchAny && request.method === "GET" && !url.pathname.endsWith("/codes")) {
+      const id = sessionMatchAny[1];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
       const result = await stub.fetch("https://session.internal/state");
       const raw = await result.text();
       if (!result.ok) return response(request, env, raw, result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       let data;
       try { data = JSON.parse(raw); } catch { return response(request, env, JSON.stringify({ error: "Invalid session state." }), 500, { "Content-Type": "application/json" }); }
       if (data.visibility !== "public") {
-        const session = await getSession(request, env);
-        if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to view this private live map." }), 401, { "Content-Type": "application/json" });
-        try {
-          const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-          if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
-        } catch { return response(request, env, JSON.stringify({ error: "Could not verify your viewing role. Sign in again and try once more." }), 403, { "Content-Type": "application/json" }); }
+        const supplied = request.headers.get("X-Session-Code") || "";
+        const ownerKey = request.headers.get("X-Owner-Key") || "";
+        const checked = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codeHash: await hashCode(supplied), ownerHash: await hashCode(ownerKey) }) });
+        if (!checked.ok) return response(request, env, JSON.stringify({ error: "Enter a valid viewer or shotcaller code to access this private session." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       }
       return response(request, env, JSON.stringify(data), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    if (sessionMatch && request.method === "PUT") {
-      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
+    if (sessionMatchAny && request.method === "PUT") {
+      const id = sessionMatchAny[1];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
       const currentResponse = await stub.fetch("https://session.internal/state");
       if (!currentResponse.ok) return response(request, env, JSON.stringify({ error: "Session not found." }), 404, { "Content-Type": "application/json" });
       const current = await currentResponse.json();
-      let session = null;
+      let canEdit = current.visibility === "public";
       if (current.visibility !== "public") {
-        session = await getSession(request, env);
-        if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
-        try {
-          const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-          if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
-          if (!member.roles.includes(SHOTCALLER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Shotcaller role required to edit this live map." }), 403, { "Content-Type": "application/json" });
-        } catch (e) {
-          if (e instanceof Response) throw e;
-          return response(request, env, JSON.stringify({ error: "Could not verify your Shotcaller role." }), 403, { "Content-Type": "application/json" });
-        }
+        const supplied = request.headers.get("X-Session-Code") || "";
+        const ownerKey = request.headers.get("X-Owner-Key") || "";
+        const checked = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codeHash: await hashCode(supplied), ownerHash: await hashCode(ownerKey) }) });
+        if (!checked.ok) return response(request, env, JSON.stringify({ error: "Enter a valid shotcaller code to edit this private session." }), 401, { "Content-Type": "application/json" });
+        const perms = await checked.json();
+        canEdit = perms.owner === true || perms.role === "shotcaller";
+        if (!canEdit) return response(request, env, JSON.stringify({ error: "Viewer codes cannot edit markers. Enter the shotcaller code." }), 403, { "Content-Type": "application/json" });
       }
       let body;
       try { body = await request.json(); } catch { return response(request, env, JSON.stringify({ error: "Invalid JSON body." }), 400, { "Content-Type": "application/json" }); }
@@ -205,10 +227,10 @@ export default {
         if (line && (!Number.isFinite(m.x2) || !Number.isFinite(m.y2) || m.x2 < 0 || m.x2 > 1200 || m.y2 < 0 || m.y2 > 760)) return response(request, env, JSON.stringify({ error: "Invalid line endpoint." }), 400, { "Content-Type": "application/json" });
         marks.push({ x: m.x, y: m.y, ...(line ? { x2: m.x2, y2: m.y2 } : {}), r: Number.isFinite(m.r) ? Math.max(4, Math.min(150, m.r)) : 48, size: Number.isFinite(m.size) ? Math.max(4, Math.min(150, m.size)) : 48, type: m.type });
       }
-      const result = await stub.fetch("https://session.internal/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marks, updatedAt: Date.now(), updatedBy: session ? (session.user.username || session.user.id) : "Public link user" }) });
+      const result = await stub.fetch("https://session.internal/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marks, updatedAt: Date.now(), updatedBy: canEdit ? "Shotcaller" : "Public link user" }) });
       return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    if (url.pathname === "/publish" && request.method === "POST") {
+        if (url.pathname === "/publish" && request.method === "POST") {
       const origin = request.headers.get("Origin");
       if (origin !== env.ALLOWED_ORIGIN) return response(request, env, JSON.stringify({ error: "Invalid origin" }), 403, { "Content-Type": "application/json" });
       const session = await getSession(request, env);
