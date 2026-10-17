@@ -1,52 +1,39 @@
 # Abyss Watch — Aion 2
 
-Community danger-map tool. Visitors can mark the map and export a PNG. Discord publishing is designed to require a verified `Police Patrol` role in the configured Discord server.
+Community danger-map tool. Visitors can mark the map and export a PNG. Publishing uses a private publishing code and sends reports to the configured webhook. There is no Discord login, OAuth, or role-based access. Live Sessions use owner, viewer, and shotcaller invitation codes.
 
 ## Website deployment (GitHub Pages)
 
-A GitHub Actions workflow is included at `.github/workflows/pages.yml`. In the repository, open **Settings → Pages** and set the build/deployment source to **GitHub Actions**. The workflow will publish the root `index.html` after it runs successfully.
+The GitHub Actions workflow in `.github/workflows/pages.yml` publishes the root `index.html`.
 
 Expected site URL: https://callmequack.github.io/Abyss-watch/
 
-## Secure Discord backend (Cloudflare Worker)
+## Cloudflare Worker deployment
 
-The backend source is in `worker/src/index.js`. It never puts the Discord client secret or webhook URL in browser JavaScript or repository files.
+The backend source is in `worker/src/index.js`.
 
-1. Create a Cloudflare account and install Wrangler locally.
-2. From the `worker` directory, copy `wrangler.toml.example` to `wrangler.toml`.
-3. Replace `REPLACE-WITH-YOUR-WORKER` with the Worker hostname you deploy. Use the exact same callback URL in the Discord Developer Portal OAuth2 redirect list.
-4. Set the production GitHub Pages origin in `ALLOWED_ORIGIN`. If you later use a custom domain, update it to that exact origin.
-5. Set secrets with Wrangler (never commit these values):
-   - `npx wrangler secret put DISCORD_CLIENT_SECRET`
-   - `npx wrangler secret put DISCORD_WEBHOOK_URL`
-   - `npx wrangler secret put SESSION_SECRET` (use a long random value)
-6. Deploy from the `worker` directory with `npx wrangler deploy`.
-7. In the Discord Developer Portal, add the exact Worker callback URL as an OAuth2 redirect URI. OAuth scopes required: `identify` and `guilds.members.read`.
-8. Verify the Worker `/health` route, then test `/login`, `/me`, and publishing with a test channel before announcing it.
+1. From the `worker` directory, copy `wrangler.toml.example` to `wrangler.toml`.
+2. Deploy from that directory with `npx wrangler deploy`.
+3. Set these Worker secrets in Cloudflare (or with Wrangler); never commit secret values:
+   - `PUBLISH_CODE` — private code used to publish reports.
+   - `DISCORD_WEBHOOK_URL` — webhook destination for reports. This is the only Discord-related integration retained, strictly as a report delivery destination.
+4. `SESSION_SECRET` is no longer used by the code-based live Sessions system and does not need to be configured.
+5. Ensure the Worker has a Durable Object binding named `LIVE_SESSIONS` targeting class `LiveSession`, with the SQLite migration shown in `wrangler.toml.example`.
+6. Verify `https://abyss-watch-api.callmequackttv.workers.dev/health`, then test publishing and creating a private/public live session.
 
-Configured Discord IDs:
-- Application client ID: `490974727767326720`
-- Server ID: `1558145560148443168`
-- Publishing role: `1560442485879083108` (Police Patrol)
-- Destination channel: `1560635671436337152`
+## Worker configuration
 
-## Important current limitations
-
-- The published map begins with an illustrative placeholder. Upload the actual Aion 2 Abyss map image to mark the real map.
-- The Worker source enforces the role on the server for every publish request, but the frontend still needs the deployed Worker URL configured and its sign-in/publish controls wired to the API before end-to-end Discord posting is live.
-- GitHub Pages is static hosting; it cannot keep Discord secrets private. Do not add webhook URLs, client secrets, or session secrets to GitHub files or public JavaScript.
-- The Discord webhook destination must be managed by someone with permission in the target server/channel.
-
+- `ALLOWED_ORIGIN`: `https://callmequack.github.io`
+- `LIVE_SESSIONS`: required Durable Object binding for live sessions.
+- `PUBLISH_CODE`: private publishing credential, configured as a secret.
+- `DISCORD_WEBHOOK_URL`: webhook used only to deliver published reports.
 
 ## Private live sessions
 
-The separate GitHub Pages route is `/Abyss-watch/Sessions/`. It creates an unguessable invite URL; anyone holding that URL can view the room, while edits are enforced by the Worker and require the Discord **Shotcaller** role ID `1558500349835354242`. Session state is stored in a Cloudflare Durable Object and polled by viewers for live updates. The main `index.html` map and Police Patrol publishing permission are separate.
+The separate route is `/Abyss-watch/Sessions/`. Private sessions create owner, viewer, and shotcaller codes. Viewer codes are read-only; shotcaller codes can edit; the owner can manage participants and rotate invitation codes. Public sessions allow anyone with the link to view and edit. No login or third-party account is required.
 
-To enable sessions on an existing Worker deployment:
+## Important notes
 
-1. Copy the `[[durable_objects.bindings]]` and `[[migrations]]` entries from `worker/wrangler.toml.example` into your actual `worker/wrangler.toml` (keep your existing production vars and secrets).
-2. Deploy the updated Worker from the `worker` directory with `npx wrangler deploy`.
-3. Wait for the GitHub Pages workflow to finish deploying the new `Sessions/index.html` page.
-4. Test Discord login, create a session, open the invite link in a second browser, and confirm that a non-Shotcaller can view but cannot edit.
-
-The Worker must be redeployed for the new session endpoints and Durable Object to become available. The public page alone cannot enforce permissions securely.
+- The published map begins with an illustrative placeholder unless the real map asset is supplied.
+- GitHub Pages is static hosting; never put the publishing code or webhook URL in frontend files.
+- Deploy the Worker from the `worker` directory, not the repository root as a static assets site.
