@@ -3,6 +3,14 @@ main = "src/index.js"
 compatibility_date = "2026-10-17"
 workers_dev = true
 
+[[durable_objects.bindings]]
+name = "LIVE_SESSIONS"
+class_name = "LiveSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LiveSession"]
+
 [vars]
 DISCORD_CLIENT_ID = "490974727767326720"
 DISCORD_GUILD_ID = "1558145560148443168"
