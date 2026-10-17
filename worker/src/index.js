@@ -1,5 +1,4 @@
 const FRONTEND_ORIGIN = "https://callmequack.github.io";
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const SESSION_MARK_TYPES = new Set(["danger","star","diamond","dot","safe","navyLine","redLine"]);
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
