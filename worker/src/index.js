@@ -9,8 +9,9 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function cors(request, env) {
   const origin = request.headers.get("Origin");
-  const allowed = env.ALLOWED_ORIGIN;
-  if (!origin || origin !== allowed) return null;
+  // Always allow the canonical GitHub Pages frontend, even if the Worker variable is misconfigured.
+  const allowedOrigins = new Set(["https://callmequack.github.io", env.ALLOWED_ORIGIN].filter(Boolean));
+  if (!origin || !allowedOrigins.has(origin)) return null;
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
