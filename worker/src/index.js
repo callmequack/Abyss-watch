@@ -57,6 +57,10 @@ async function unseal(value, env) {
     return data;
   } catch { return null; }
 }
+async function getSession(request, env) {
+  return unseal(cookieValue(request, COOKIE), env);
+}
+
 function randomCode(bytes = 12) {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const raw = crypto.getRandomValues(new Uint8Array(bytes));
