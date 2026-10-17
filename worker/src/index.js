@@ -2,6 +2,8 @@ const DISCORD_API = "https://discord.com/api/v10";
 const COOKIE = "abyss_session";
 const STATE_COOKIE = "abyss_oauth_state";
 const RETURN_COOKIE = "abyss_return_to";
+const FRONTEND_ORIGIN = "https://callmequack.github.io";
+const FRONTEND_HOME = FRONTEND_ORIGIN + "/Abyss-watch/";
 const SHOTCALLER_ROLE_ID = "1558500349835354242";
 const SESSION_VIEWER_ROLE_ID = "1558147579529797705";
 const SESSION_MARK_TYPES = new Set(["danger","star","diamond","dot","safe","navyLine","redLine"]);
@@ -106,9 +108,9 @@ export default {
     if (url.pathname === "/health" && request.method === "GET") return response(request, env, JSON.stringify({ ok: true }), 200, { "Content-Type": "application/json" });
     if (url.pathname === "/login" && request.method === "GET") {
       const state = crypto.randomUUID();
-      const requestedReturn = url.searchParams.get("return_to") || env.ALLOWED_ORIGIN;
-      let returnTo = env.ALLOWED_ORIGIN;
-      try { const candidate = new URL(requestedReturn); if (candidate.origin === env.ALLOWED_ORIGIN && candidate.pathname.startsWith("/Abyss-watch/")) returnTo = candidate.href; } catch {}
+      const requestedReturn = url.searchParams.get("return_to") || FRONTEND_HOME;
+      let returnTo = FRONTEND_HOME;
+      try { const candidate = new URL(requestedReturn); if (candidate.origin === FRONTEND_ORIGIN && candidate.pathname.startsWith("/Abyss-watch/")) returnTo = candidate.href; } catch {}
       const callback = new URL("/callback", url.origin);
       const authorize = new URL(DISCORD_API + "/oauth2/authorize");
       authorize.search = new URLSearchParams({
@@ -133,8 +135,8 @@ export default {
         const token = await exchangeCode(code, env, url);
         const user = await discord("/users/@me", token.access_token);
         const session = await seal({ access_token: token.access_token, user: { id: user.id, username: user.username, global_name: user.global_name }, exp: Date.now() + Math.min(token.expires_in || 3600, 3600) * 1000 }, env);
-        let returnTo = env.ALLOWED_ORIGIN;
-        try { const saved = decodeURIComponent(cookieValue(request, RETURN_COOKIE)); const candidate = new URL(saved); if (candidate.origin === env.ALLOWED_ORIGIN && candidate.pathname.startsWith("/Abyss-watch/")) returnTo = candidate.href; } catch {}
+        let returnTo = FRONTEND_HOME;
+        try { const saved = decodeURIComponent(cookieValue(request, RETURN_COOKIE)); const candidate = new URL(saved); if (candidate.origin === FRONTEND_ORIGIN && candidate.pathname.startsWith("/Abyss-watch/")) returnTo = candidate.href; } catch {}
         const headers = new Headers({ Location: returnTo, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
         headers.append("Set-Cookie", cookie(COOKIE, session, 3600));
         headers.append("Set-Cookie", cookie(STATE_COOKIE, "", 0));
