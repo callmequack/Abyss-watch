@@ -260,6 +260,33 @@ export class LiveSession {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/auth-init" && request.method === "POST") {
+      if (await this.state.storage.get("sessionAuth")) return new Response("Already initialized", { status: 409 });
+      let data;
+      try { data = await request.json(); } catch { return new Response("Invalid body", { status: 400 }); }
+      if (!data.ownerHash || !data.viewerHash || !data.shotcallerHash) return new Response("Missing hashes", { status: 400 });
+      await this.state.storage.put("sessionAuth", { ownerHash: data.ownerHash, viewerHash: data.viewerHash, shotcallerHash: data.shotcallerHash });
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/auth-check" && request.method === "POST") {
+      let data;
+      try { data = await request.json(); } catch { data = {}; }
+      const auth = await this.state.storage.get("sessionAuth");
+      if (!auth) return new Response("Not configured", { status: 404 });
+      if (data.ownerHash && data.ownerHash === auth.ownerHash) return Response.json({ owner: true, role: "owner" });
+      if (data.codeHash && data.codeHash === auth.shotcallerHash) return Response.json({ owner: false, role: "shotcaller" });
+      if (data.codeHash && data.codeHash === auth.viewerHash) return Response.json({ owner: false, role: "viewer" });
+      return new Response("Forbidden", { status: 403 });
+    }
+    if (url.pathname === "/auth-rotate" && request.method === "POST") {
+      let data;
+      try { data = await request.json(); } catch { data = {}; }
+      const auth = await this.state.storage.get("sessionAuth");
+      if (!auth || !["viewer", "shotcaller"].includes(data.kind) || !data.hash) return new Response("Invalid rotation", { status: 400 });
+      auth[data.kind + "Hash"] = data.hash;
+      await this.state.storage.put("sessionAuth", auth);
+      return Response.json({ ok: true });
+    }
     if (url.pathname === "/init" && request.method === "POST") {
       const current = await this.state.storage.get("session");
       if (current) return new Response(JSON.stringify({ error: "Already initialized" }), { status: 409 });
