@@ -111,12 +111,10 @@ export default {
         const token = await exchangeCode(code, env, url);
         const user = await discord("/users/@me", token.access_token);
         const session = await seal({ access_token: token.access_token, user: { id: user.id, username: user.username, global_name: user.global_name }, exp: Date.now() + Math.min(token.expires_in || 3600, 3600) * 1000 }, env);
-        return new Response(null, { status: 302, headers: {
-          Location: env.ALLOWED_ORIGIN,
-          "Set-Cookie": cookie(COOKIE, session, 3600) + "\nSet-Cookie: " + cookie(STATE_COOKIE, "", 0),
-          "Cache-Control": "no-store",
-          "Referrer-Policy": "no-referrer"
-        }});
+        const headers = new Headers({ Location: env.ALLOWED_ORIGIN, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+        headers.append("Set-Cookie", cookie(COOKIE, session, 3600));
+        headers.append("Set-Cookie", cookie(STATE_COOKIE, "", 0));
+        return new Response(null, { status: 302, headers });
       } catch { return new Response("Discord sign-in failed. Please try again.", { status: 502 }); }
     }
     if (url.pathname === "/logout" && request.method === "POST") return response(request, env, JSON.stringify({ ok: true }), 200, { "Content-Type": "application/json", "Set-Cookie": cookie(COOKIE, "", 0) });
