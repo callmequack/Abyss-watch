@@ -113,7 +113,7 @@ export default {
         const session = await seal({ access_token: token.access_token, user: { id: user.id, username: user.username, global_name: user.global_name }, exp: Date.now() + Math.min(token.expires_in || 3600, 3600) * 1000 }, env);
         return new Response(null, { status: 302, headers: {
           Location: env.ALLOWED_ORIGIN,
-          "Set-Cookie": cookie(COOKIE, session, 3600) + ", " + cookie(STATE_COOKIE, "", 0),
+          "Set-Cookie": cookie(COOKIE, session, 3600) + "\nSet-Cookie: " + cookie(STATE_COOKIE, "", 0),
           "Cache-Control": "no-store",
           "Referrer-Policy": "no-referrer"
         }});
