@@ -140,18 +140,21 @@ export default {
       } catch { return response(request, env, JSON.stringify({ authenticated: false, canPublish: false, canViewSessions: false, canShotcall: false }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); }
     }
     if (url.pathname === "/sessions" && request.method === "POST") {
-      const session = await unseal(cookieValue(request, COOKIE), env);
-      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to create a session." }), 401, { "Content-Type": "application/json" });
-      try {
-        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-        if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
-      } catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
       let body;
       try { body = await request.json(); } catch { body = {}; }
       const visibility = body.visibility === "public" ? "public" : "private";
+      let session = null;
+      if (visibility !== "public") {
+        session = await unseal(cookieValue(request, COOKIE), env);
+        if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to create a private session." }), 401, { "Content-Type": "application/json" });
+        try {
+          const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
+          if (!Array.isArray(member.roles) || !member.roles.includes(SESSION_VIEWER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Live Sessions viewing role required." }), 403, { "Content-Type": "application/json" });
+        } catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
+      }
       const id = crypto.randomUUID() + "-" + crypto.randomUUID().replace(/-/g, "");
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
-      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session.user.id, createdAt: Date.now(), visibility }) });
+      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session ? session.user.id : null, createdAt: Date.now(), visibility }) });
       if (!created.ok) return response(request, env, JSON.stringify({ error: "Could not create the live session." }), 500, { "Content-Type": "application/json" });
       return response(request, env, JSON.stringify({ ok: true, id }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
