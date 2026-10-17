@@ -168,9 +168,9 @@ export default {
       }
       return response(request, env, JSON.stringify({ ok: true, id, visibility, ...(visibility === "private" ? { ownerKey, viewerCode, shotcallerCode } : {}) }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    const sessionMatch = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})$/i);
-    if (sessionMatch && url.pathname.endsWith("/codes") && request.method === "POST") {
-      const id = sessionMatch[1];
+    const codeMatch = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})\\/codes$/i);
+    if (codeMatch && request.method === "POST") {
+      const id = codeMatch[1];
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
       const ownerKey = request.headers.get("X-Owner-Key") || "";
       const auth = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerHash: await hashCode(ownerKey) }) });
