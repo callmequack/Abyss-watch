@@ -18,7 +18,7 @@ function cors(request, env) {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Code, X-Owner-Key, X-Participant-Token",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Code, X-Owner-Key, X-Participant-Token, X-Publish-Code",
     "Vary": "Origin"
   };
 }
@@ -302,12 +302,10 @@ export default {
         if (url.pathname === "/publish" && request.method === "POST") {
       const origin = request.headers.get("Origin");
       if (origin !== env.ALLOWED_ORIGIN) return response(request, env, JSON.stringify({ error: "Invalid origin" }), 403, { "Content-Type": "application/json" });
-      const session = await getSession(request, env);
-      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
-      try {
-        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-        if (!Array.isArray(member.roles) || !member.roles.includes(env.POLICE_PATROL_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Police Patrol role required." }), 403, { "Content-Type": "application/json" });
-      } catch { return response(request, env, JSON.stringify({ error: "Could not verify your Discord server membership." }), 403, { "Content-Type": "application/json" }); }
+      const suppliedCode = request.headers.get("X-Publish-Code") || "";
+      const expectedCode = env.PUBLISH_CODE || "";
+      if (!expectedCode) return response(request, env, JSON.stringify({ error: "Publishing is not configured on the server yet." }), 503, { "Content-Type": "application/json" });
+      if (suppliedCode.length < 16 || suppliedCode !== expectedCode) return response(request, env, JSON.stringify({ error: "Invalid publishing code." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       const form = await request.formData();
       const image = form.get("image");
       const title = String(form.get("title") || "Abyss danger report").slice(0, 100);
