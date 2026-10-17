@@ -198,6 +198,8 @@ export default {
         const ownerKey = request.headers.get("X-Owner-Key") || "";
         const checked = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codeHash: await hashCode(supplied), ownerHash: await hashCode(ownerKey) }) });
         if (!checked.ok) return response(request, env, JSON.stringify({ error: "Enter a valid viewer or shotcaller code to access this private session." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        const access = await checked.json();
+        data.accessRole = access.role;
       }
       return response(request, env, JSON.stringify(data), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
