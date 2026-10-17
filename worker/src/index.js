@@ -101,11 +101,10 @@ export default {
         scope: "identify guilds.members.read",
         state
       }).toString();
-      return new Response(null, { status: 302, headers: {
-        Location: authorize.toString(),
-        "Set-Cookie": cookie(STATE_COOKIE, state, 600) + ", " + cookie(RETURN_COOKIE, encodeURIComponent(returnTo), 600),
-        "Cache-Control": "no-store"
-      }});
+      const headers = new Headers({ Location: authorize.toString(), "Cache-Control": "no-store" });
+      headers.append("Set-Cookie", cookie(STATE_COOKIE, state, 600));
+      headers.append("Set-Cookie", cookie(RETURN_COOKIE, encodeURIComponent(returnTo), 600));
+      return new Response(null, { status: 302, headers });
     }
     if (url.pathname === "/callback" && request.method === "GET") {
       const state = url.searchParams.get("state") || "";
