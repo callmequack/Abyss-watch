@@ -7,21 +7,9 @@ workers_dev = true
 name = "LIVE_SESSIONS"
 class_name = "LiveSession"
 
-[[durable_objects.bindings]]
-name = "AUTH_SESSIONS"
-class_name = "AuthSessions"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveSession"]
 
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["AuthSessions"]
-
 [vars]
-DISCORD_CLIENT_ID = "490974727767326720"
-DISCORD_GUILD_ID = "1558145560148443168"
-POLICE_PATROL_ROLE_ID = "1560442485879083108"
-DISCORD_REDIRECT_URI = "https://REPLACE-WITH-YOUR-WORKER.workers.dev/callback"
 ALLOWED_ORIGIN = "https://callmequack.github.io"
