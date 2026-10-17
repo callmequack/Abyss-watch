@@ -168,7 +168,7 @@ export default {
       }
       return response(request, env, JSON.stringify({ ok: true, id, visibility, ...(visibility === "private" ? { ownerKey, viewerCode, shotcallerCode } : {}) }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    const codeMatch = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})\\/codes$/i);
+    const codeMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})\/codes$/i);
     if (codeMatch && request.method === "POST") {
       const id = codeMatch[1];
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
@@ -184,7 +184,7 @@ export default {
       if (!changed.ok) return response(request, env, JSON.stringify({ error: "Could not rotate the invitation code." }), 500, { "Content-Type": "application/json" });
       return response(request, env, JSON.stringify({ ok: true, kind, code }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-    const sessionMatchAny = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})(?:\\/codes)?$/i);
+    const sessionMatchAny = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})(?:\/codes)?$/i);
     if (sessionMatchAny && request.method === "GET" && !url.pathname.endsWith("/codes")) {
       const id = sessionMatchAny[1];
       const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
