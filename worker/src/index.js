@@ -1,6 +1,9 @@
 const DISCORD_API = "https://discord.com/api/v10";
 const COOKIE = "abyss_session";
 const STATE_COOKIE = "abyss_oauth_state";
+const RETURN_COOKIE = "abyss_return_to";
+const SHOTCALLER_ROLE_ID = "1558500349835354242";
+const SESSION_MARK_TYPES = new Set(["danger","star","diamond","dot","safe","navyLine","redLine"]);
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function cors(request, env) {
@@ -86,6 +89,9 @@ export default {
     if (url.pathname === "/health" && request.method === "GET") return response(request, env, JSON.stringify({ ok: true }), 200, { "Content-Type": "application/json" });
     if (url.pathname === "/login" && request.method === "GET") {
       const state = crypto.randomUUID();
+      const requestedReturn = url.searchParams.get("return_to") || env.ALLOWED_ORIGIN;
+      let returnTo = env.ALLOWED_ORIGIN;
+      try { const candidate = new URL(requestedReturn); if (candidate.origin === env.ALLOWED_ORIGIN && candidate.pathname.startsWith("/Abyss-watch/")) returnTo = candidate.href; } catch {}
       const callback = new URL("/callback", url.origin);
       const authorize = new URL(DISCORD_API + "/oauth2/authorize");
       authorize.search = new URLSearchParams({
@@ -97,7 +103,7 @@ export default {
       }).toString();
       return new Response(null, { status: 302, headers: {
         Location: authorize.toString(),
-        "Set-Cookie": cookie(STATE_COOKIE, state, 600),
+        "Set-Cookie": cookie(STATE_COOKIE, state, 600) + ", " + cookie(RETURN_COOKIE, encodeURIComponent(returnTo), 600),
         "Cache-Control": "no-store"
       }});
     }
@@ -111,9 +117,12 @@ export default {
         const token = await exchangeCode(code, env, url);
         const user = await discord("/users/@me", token.access_token);
         const session = await seal({ access_token: token.access_token, user: { id: user.id, username: user.username, global_name: user.global_name }, exp: Date.now() + Math.min(token.expires_in || 3600, 3600) * 1000 }, env);
-        const headers = new Headers({ Location: env.ALLOWED_ORIGIN, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+        let returnTo = env.ALLOWED_ORIGIN;
+        try { const saved = decodeURIComponent(cookieValue(request, RETURN_COOKIE)); const candidate = new URL(saved); if (candidate.origin === env.ALLOWED_ORIGIN && candidate.pathname.startsWith("/Abyss-watch/")) returnTo = candidate.href; } catch {}
+        const headers = new Headers({ Location: returnTo, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
         headers.append("Set-Cookie", cookie(COOKIE, session, 3600));
         headers.append("Set-Cookie", cookie(STATE_COOKIE, "", 0));
+        headers.append("Set-Cookie", cookie(RETURN_COOKIE, "", 0));
         return new Response(null, { status: 302, headers });
       } catch { return new Response("Discord sign-in failed. Please try again.", { status: 502 }); }
     }
@@ -123,9 +132,52 @@ export default {
       if (!session) return response(request, env, JSON.stringify({ authenticated: false }), 200, { "Content-Type": "application/json" });
       try {
         const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
-        const canPublish = Array.isArray(member.roles) && member.roles.includes(env.POLICE_PATROL_ROLE_ID);
-        return response(request, env, JSON.stringify({ authenticated: true, user: session.user, canPublish }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        const roles = Array.isArray(member.roles) ? member.roles : [];
+        const canPublish = roles.includes(env.POLICE_PATROL_ROLE_ID);
+        const canShotcall = roles.includes(SHOTCALLER_ROLE_ID);
+        return response(request, env, JSON.stringify({ authenticated: true, user: session.user, canPublish, canShotcall }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       } catch { return response(request, env, JSON.stringify({ authenticated: false, canPublish: false }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); }
+    }
+    if (url.pathname === "/sessions" && request.method === "POST") {
+      const session = await unseal(cookieValue(request, COOKIE), env);
+      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to create a session." }), 401, { "Content-Type": "application/json" });
+      try { await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token); }
+      catch { return response(request, env, JSON.stringify({ error: "Join the configured Discord server and sign in first." }), 403, { "Content-Type": "application/json" }); }
+      const id = crypto.randomUUID() + "-" + crypto.randomUUID().replace(/-/g, "");
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
+      const created = await stub.fetch("https://session.internal/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ createdBy: session.user.id, createdAt: Date.now() }) });
+      if (!created.ok) return response(request, env, JSON.stringify({ error: "Could not create the live session." }), 500, { "Content-Type": "application/json" });
+      return response(request, env, JSON.stringify({ ok: true, id }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
+    const sessionMatch = url.pathname.match(/^\\/sessions\\/([a-f0-9-]{60,80})$/i);
+    if (sessionMatch && request.method === "GET") {
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
+      const result = await stub.fetch("https://session.internal/state");
+      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
+    if (sessionMatch && request.method === "PUT") {
+      const session = await unseal(cookieValue(request, COOKIE), env);
+      if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
+      try {
+        const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
+        if (!Array.isArray(member.roles) || !member.roles.includes(SHOTCALLER_ROLE_ID)) return response(request, env, JSON.stringify({ error: "Shotcaller role required to edit this live map." }), 403, { "Content-Type": "application/json" });
+      } catch (e) {
+        if (e instanceof Response) throw e;
+        return response(request, env, JSON.stringify({ error: "Could not verify your Shotcaller role." }), 403, { "Content-Type": "application/json" });
+      }
+      let body;
+      try { body = await request.json(); } catch { return response(request, env, JSON.stringify({ error: "Invalid JSON body." }), 400, { "Content-Type": "application/json" }); }
+      if (!Array.isArray(body.marks) || body.marks.length > 500) return response(request, env, JSON.stringify({ error: "Map must contain 500 markers or fewer." }), 400, { "Content-Type": "application/json" });
+      const marks = [];
+      for (const m of body.marks) {
+        if (!m || !SESSION_MARK_TYPES.has(m.type) || !Number.isFinite(m.x) || !Number.isFinite(m.y) || m.x < 0 || m.x > 1200 || m.y < 0 || m.y > 760) return response(request, env, JSON.stringify({ error: "Invalid marker data." }), 400, { "Content-Type": "application/json" });
+        const line = m.type === "navyLine" || m.type === "redLine";
+        if (line && (!Number.isFinite(m.x2) || !Number.isFinite(m.y2) || m.x2 < 0 || m.x2 > 1200 || m.y2 < 0 || m.y2 > 760)) return response(request, env, JSON.stringify({ error: "Invalid line endpoint." }), 400, { "Content-Type": "application/json" });
+        marks.push({ x: m.x, y: m.y, ...(line ? { x2: m.x2, y2: m.y2 } : {}), r: Number.isFinite(m.r) ? Math.max(4, Math.min(150, m.r)) : 48, size: Number.isFinite(m.size) ? Math.max(4, Math.min(150, m.size)) : 48, type: m.type });
+      }
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(sessionMatch[1]));
+      const result = await stub.fetch("https://session.internal/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marks, updatedAt: Date.now(), updatedBy: session.user.username || session.user.id }) });
+      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
     if (url.pathname === "/publish" && request.method === "POST") {
       const origin = request.headers.get("Origin");
@@ -152,3 +204,33 @@ export default {
     return response(request, env, JSON.stringify({ error: "Not found" }), 404, { "Content-Type": "application/json" });
   }
 };
+
+export class LiveSession {
+  constructor(state, env) { this.state = state; this.env = env; }
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/init" && request.method === "POST") {
+      const current = await this.state.storage.get("session");
+      if (current) return new Response(JSON.stringify({ error: "Already initialized" }), { status: 409 });
+      let data = {};
+      try { data = await request.json(); } catch {}
+      await this.state.storage.put("session", { marks: [], createdAt: data.createdAt || Date.now(), createdBy: data.createdBy || null, updatedAt: Date.now(), updatedBy: null });
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/state" && request.method === "GET") {
+      const data = await this.state.storage.get("session");
+      if (!data) return Response.json({ error: "Session not found" }, { status: 404 });
+      return Response.json(data, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname === "/state" && request.method === "PUT") {
+      const old = await this.state.storage.get("session");
+      if (!old) return Response.json({ error: "Session not found" }, { status: 404 });
+      let update;
+      try { update = await request.json(); } catch { return Response.json({ error: "Invalid body" }, { status: 400 }); }
+      const next = { ...old, marks: update.marks, updatedAt: update.updatedAt || Date.now(), updatedBy: update.updatedBy || null };
+      await this.state.storage.put("session", next);
+      return Response.json({ ok: true, updatedAt: next.updatedAt });
+    }
+    return new Response("Not found", { status: 404 });
+  }
+}
