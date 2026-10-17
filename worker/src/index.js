@@ -15,8 +15,8 @@ function cors(request, env) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Code, X-Owner-Key",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Code, X-Owner-Key, X-Participant-Token",
     "Vary": "Origin"
   };
 }
@@ -184,6 +184,60 @@ export default {
       if (!changed.ok) return response(request, env, JSON.stringify({ error: "Could not rotate the invitation code." }), 500, { "Content-Type": "application/json" });
       return response(request, env, JSON.stringify({ ok: true, kind, code }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
+    const joinMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})\/join$/i);
+    if (joinMatch && request.method === "POST") {
+      const id = joinMatch[1];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
+      const stateResponse = await stub.fetch("https://session.internal/state");
+      if (!stateResponse.ok) return response(request, env, JSON.stringify({ error: "Session not found." }), 404, { "Content-Type": "application/json" });
+      const state = await stateResponse.json();
+      if (state.visibility === "public") return response(request, env, JSON.stringify({ error: "Public sessions do not need a code. Open the session link." }), 400, { "Content-Type": "application/json" });
+      let body;
+      try { body = await request.json(); } catch { body = {}; }
+      const name = String(body.name || "").trim().replace(/[<>]/g, "").slice(0, 32);
+      const suppliedCode = String(body.code || "");
+      if (!name) return response(request, env, JSON.stringify({ error: "Enter a display name." }), 400, { "Content-Type": "application/json" });
+      if (name.length < 2) return response(request, env, JSON.stringify({ error: "Name must be at least 2 characters." }), 400, { "Content-Type": "application/json" });
+      const ownerKey = String(body.ownerKey || "");
+      const participantId = crypto.randomUUID();
+      const token = randomCode(32);
+      const joined = await stub.fetch("https://session.internal/join", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, participantId, tokenHash: await hashCode(token), codeHash: await hashCode(suppliedCode), ownerHash: await hashCode(ownerKey), now: Date.now() }) });
+      const joinedBody = await joined.json().catch(() => ({}));
+      if (!joined.ok) return response(request, env, JSON.stringify({ error: joinedBody.error || "Invalid invitation code." }), joined.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      return response(request, env, JSON.stringify({ ok: true, id, token, participant: joinedBody.participant }), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
+    const participantsMatch = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})\/participants(?:\/([a-f0-9-]{36}))?$/i);
+    if (participantsMatch && request.method === "GET") {
+      const id = participantsMatch[1];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
+      const token = request.headers.get("X-Participant-Token") || "";
+      const checked = await stub.fetch("https://session.internal/participant-auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokenHash: await hashCode(token), now: Date.now() }) });
+      if (!checked.ok) return response(request, env, JSON.stringify({ error: "Your access has expired or been revoked. Rejoin with an invitation code." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      const participant = await checked.json();
+      if (participant.role !== "owner") return response(request, env, JSON.stringify({ error: "Only the session owner can view the participant list." }), 403, { "Content-Type": "application/json" });
+      const result = await stub.fetch("https://session.internal/participants");
+      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
+    if (participantsMatch && participantsMatch[2] && request.method === "PATCH") {
+      const id = participantsMatch[1], targetId = participantsMatch[2];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
+      const token = request.headers.get("X-Participant-Token") || "";
+      const checked = await stub.fetch("https://session.internal/participant-auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokenHash: await hashCode(token), now: Date.now() }) });
+      if (!checked.ok || (await checked.json()).role !== "owner") return response(request, env, JSON.stringify({ error: "Only the session owner can change roles." }), 403, { "Content-Type": "application/json" });
+      let body;
+      try { body = await request.json(); } catch { body = {}; }
+      const result = await stub.fetch("https://session.internal/participant-role", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ participantId: targetId, role: body.role }) });
+      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
+    if (participantsMatch && participantsMatch[2] && request.method === "DELETE") {
+      const id = participantsMatch[1], targetId = participantsMatch[2];
+      const stub = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName(id));
+      const token = request.headers.get("X-Participant-Token") || "";
+      const checked = await stub.fetch("https://session.internal/participant-auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokenHash: await hashCode(token), now: Date.now() }) });
+      if (!checked.ok || (await checked.json()).role !== "owner") return response(request, env, JSON.stringify({ error: "Only the session owner can revoke participants." }), 403, { "Content-Type": "application/json" });
+      const result = await stub.fetch("https://session.internal/participant-revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ participantId: targetId }) });
+      return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    }
     const sessionMatchAny = url.pathname.match(/^\/sessions\/([a-f0-9-]{60,80})(?:\/codes)?$/i);
     if (sessionMatchAny && request.method === "GET" && !url.pathname.endsWith("/codes")) {
       const id = sessionMatchAny[1];
@@ -194,12 +248,12 @@ export default {
       let data;
       try { data = JSON.parse(raw); } catch { return response(request, env, JSON.stringify({ error: "Invalid session state." }), 500, { "Content-Type": "application/json" }); }
       if (data.visibility !== "public") {
-        const supplied = request.headers.get("X-Session-Code") || "";
-        const ownerKey = request.headers.get("X-Owner-Key") || "";
-        const checked = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codeHash: await hashCode(supplied), ownerHash: await hashCode(ownerKey) }) });
-        if (!checked.ok) return response(request, env, JSON.stringify({ error: "Enter a valid viewer or shotcaller code to access this private session." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        const token = request.headers.get("X-Participant-Token") || "";
+        const checked = await stub.fetch("https://session.internal/participant-auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokenHash: await hashCode(token), now: Date.now() }) });
+        if (!checked.ok) return response(request, env, JSON.stringify({ error: "Your access has expired or been revoked. Join with your name and invitation code." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         const access = await checked.json();
         data.accessRole = access.role;
+        data.participantId = access.id;
       }
       return response(request, env, JSON.stringify(data), 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
@@ -211,13 +265,12 @@ export default {
       const current = await currentResponse.json();
       let canEdit = current.visibility === "public";
       if (current.visibility !== "public") {
-        const supplied = request.headers.get("X-Session-Code") || "";
-        const ownerKey = request.headers.get("X-Owner-Key") || "";
-        const checked = await stub.fetch("https://session.internal/auth-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codeHash: await hashCode(supplied), ownerHash: await hashCode(ownerKey) }) });
-        if (!checked.ok) return response(request, env, JSON.stringify({ error: "Enter a valid shotcaller code to edit this private session." }), 401, { "Content-Type": "application/json" });
+        const token = request.headers.get("X-Participant-Token") || "";
+        const checked = await stub.fetch("https://session.internal/participant-auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokenHash: await hashCode(token), now: Date.now() }) });
+        if (!checked.ok) return response(request, env, JSON.stringify({ error: "Your access has expired or been revoked." }), 401, { "Content-Type": "application/json" });
         const perms = await checked.json();
-        canEdit = perms.owner === true || perms.role === "shotcaller";
-        if (!canEdit) return response(request, env, JSON.stringify({ error: "Viewer codes cannot edit markers. Enter the shotcaller code." }), 403, { "Content-Type": "application/json" });
+        canEdit = perms.role === "owner" || perms.role === "shotcaller";
+        if (!canEdit) return response(request, env, JSON.stringify({ error: "Your current role is read-only." }), 403, { "Content-Type": "application/json" });
       }
       let body;
       try { body = await request.json(); } catch { return response(request, env, JSON.stringify({ error: "Invalid JSON body." }), 400, { "Content-Type": "application/json" }); }
@@ -262,6 +315,63 @@ export class LiveSession {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/join" && request.method === "POST") {
+      let data;
+      try { data = await request.json(); } catch { data = {}; }
+      const auth = await this.state.storage.get("sessionAuth");
+      if (!auth) return Response.json({ error: "Session access is not configured." }, { status: 500 });
+      let role = "";
+      if (data.ownerHash && data.ownerHash === auth.ownerHash) role = "owner";
+      else if (data.codeHash && data.codeHash === auth.shotcallerHash) role = "shotcaller";
+      else if (data.codeHash && data.codeHash === auth.viewerHash) role = "viewer";
+      if (!role) return Response.json({ error: "That invitation code is not valid." }, { status: 401 });
+      const participants = await this.state.storage.get("participants") || {};
+      const participant = { id: data.participantId, name: String(data.name || "Guest").slice(0, 32), role, tokenHash: data.tokenHash, joinedAt: data.now || Date.now(), lastSeen: data.now || Date.now() };
+      participants[participant.id] = participant;
+      await this.state.storage.put("participants", participants);
+      return Response.json({ participant: { id: participant.id, name: participant.name, role: participant.role, joinedAt: participant.joinedAt, lastSeen: participant.lastSeen } });
+    }
+    if (url.pathname === "/participant-auth" && request.method === "POST") {
+      let data;
+      try { data = await request.json(); } catch { data = {}; }
+      const participants = await this.state.storage.get("participants") || {};
+      const found = Object.values(participants).find(p => p.tokenHash && p.tokenHash === data.tokenHash);
+      if (!found) return Response.json({ error: "Access revoked." }, { status: 401 });
+      found.lastSeen = data.now || Date.now();
+      participants[found.id] = found;
+      await this.state.storage.put("participants", participants);
+      return Response.json({ id: found.id, name: found.name, role: found.role, joinedAt: found.joinedAt, lastSeen: found.lastSeen });
+    }
+    if (url.pathname === "/participants" && request.method === "GET") {
+      const participants = await this.state.storage.get("participants") || {};
+      const now = Date.now();
+      const list = Object.values(participants).map(p => ({ id: p.id, name: p.name, role: p.role, joinedAt: p.joinedAt, lastSeen: p.lastSeen, online: now - (p.lastSeen || 0) < 20000 })).sort((a,b) => (a.role === "owner" ? -1 : b.role === "owner" ? 1 : a.name.localeCompare(b.name)));
+      return Response.json({ participants: list }, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname === "/participant-role" && request.method === "POST") {
+      let data;
+      try { data = await request.json(); } catch { data = {}; }
+      const participants = await this.state.storage.get("participants") || {};
+      const target = participants[data.participantId];
+      if (!target) return Response.json({ error: "Participant not found." }, { status: 404 });
+      if (target.role === "owner") return Response.json({ error: "Owner permissions cannot be changed here." }, { status: 400 });
+      if (!["viewer", "shotcaller"].includes(data.role)) return Response.json({ error: "Choose Viewer or Shotcaller." }, { status: 400 });
+      target.role = data.role;
+      participants[target.id] = target;
+      await this.state.storage.put("participants", participants);
+      return Response.json({ ok: true, participant: { id: target.id, name: target.name, role: target.role } });
+    }
+    if (url.pathname === "/participant-revoke" && request.method === "POST") {
+      let data;
+      try { data = await request.json(); } catch { data = {}; }
+      const participants = await this.state.storage.get("participants") || {};
+      const target = participants[data.participantId];
+      if (!target) return Response.json({ error: "Participant not found." }, { status: 404 });
+      if (target.role === "owner") return Response.json({ error: "Owner access cannot be revoked from the roster." }, { status: 400 });
+      delete participants[target.id];
+      await this.state.storage.put("participants", participants);
+      return Response.json({ ok: true });
+    }
     if (url.pathname === "/auth-init" && request.method === "POST") {
       if (await this.state.storage.get("sessionAuth")) return new Response("Already initialized", { status: 409 });
       let data;
