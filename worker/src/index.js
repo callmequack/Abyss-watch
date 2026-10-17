@@ -16,7 +16,7 @@ function cors(request, env) {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Vary": "Origin"
   };
 }
@@ -129,7 +129,7 @@ export default {
     }
     if (url.pathname === "/logout" && request.method === "POST") return response(request, env, JSON.stringify({ ok: true }), 200, { "Content-Type": "application/json", "Set-Cookie": cookie(COOKIE, "", 0) });
     if (url.pathname === "/me" && request.method === "GET") {
-      const session = await unseal(cookieValue(request, COOKIE), env);
+      const session = await getSession(request, env);
       if (!session) return response(request, env, JSON.stringify({ authenticated: false, canViewSessions: false, canShotcall: false }), 200, { "Content-Type": "application/json" });
       try {
         const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
@@ -146,7 +146,7 @@ export default {
       const visibility = body.visibility === "public" ? "public" : "private";
       let session = null;
       if (visibility !== "public") {
-        session = await unseal(cookieValue(request, COOKIE), env);
+        session = await getSession(request, env);
         if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to create a private session." }), 401, { "Content-Type": "application/json" });
         try {
           const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
@@ -168,7 +168,7 @@ export default {
       let data;
       try { data = JSON.parse(raw); } catch { return response(request, env, JSON.stringify({ error: "Invalid session state." }), 500, { "Content-Type": "application/json" }); }
       if (data.visibility !== "public") {
-        const session = await unseal(cookieValue(request, COOKIE), env);
+        const session = await getSession(request, env);
         if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord to view this private live map." }), 401, { "Content-Type": "application/json" });
         try {
           const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
@@ -184,7 +184,7 @@ export default {
       const current = await currentResponse.json();
       let session = null;
       if (current.visibility !== "public") {
-        session = await unseal(cookieValue(request, COOKIE), env);
+        session = await getSession(request, env);
         if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
         try {
           const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
@@ -211,7 +211,7 @@ export default {
     if (url.pathname === "/publish" && request.method === "POST") {
       const origin = request.headers.get("Origin");
       if (origin !== env.ALLOWED_ORIGIN) return response(request, env, JSON.stringify({ error: "Invalid origin" }), 403, { "Content-Type": "application/json" });
-      const session = await unseal(cookieValue(request, COOKIE), env);
+      const session = await getSession(request, env);
       if (!session) return response(request, env, JSON.stringify({ error: "Sign in with Discord first." }), 401, { "Content-Type": "application/json" });
       try {
         const member = await discord("/users/@me/guilds/" + env.DISCORD_GUILD_ID + "/member", session.access_token);
