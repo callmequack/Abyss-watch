@@ -36,3 +36,17 @@ Configured Discord IDs:
 - The Worker source enforces the role on the server for every publish request, but the frontend still needs the deployed Worker URL configured and its sign-in/publish controls wired to the API before end-to-end Discord posting is live.
 - GitHub Pages is static hosting; it cannot keep Discord secrets private. Do not add webhook URLs, client secrets, or session secrets to GitHub files or public JavaScript.
 - The Discord webhook destination must be managed by someone with permission in the target server/channel.
+
+
+## Private live sessions
+
+The separate GitHub Pages route is `/Abyss-watch/Sessions/`. It creates an unguessable invite URL; anyone holding that URL can view the room, while edits are enforced by the Worker and require the Discord **Shotcaller** role ID `1558500349835354242`. Session state is stored in a Cloudflare Durable Object and polled by viewers for live updates. The main `index.html` map and Police Patrol publishing permission are separate.
+
+To enable sessions on an existing Worker deployment:
+
+1. Copy the `[[durable_objects.bindings]]` and `[[migrations]]` entries from `worker/wrangler.toml.example` into your actual `worker/wrangler.toml` (keep your existing production vars and secrets).
+2. Deploy the updated Worker from the `worker` directory with `npx wrangler deploy`.
+3. Wait for the GitHub Pages workflow to finish deploying the new `Sessions/index.html` page.
+4. Test Discord login, create a session, open the invite link in a second browser, and confirm that a non-Shotcaller can view but cannot edit.
+
+The Worker must be redeployed for the new session endpoints and Durable Object to become available. The public page alone cannot enforce permissions securely.
