@@ -1,0 +1,11 @@
+name = "abyss-watch-api"
+main = "src/index.js"
+compatibility_date = "2026-10-17"
+workers_dev = true
+
+[vars]
+DISCORD_CLIENT_ID = "490974727767326720"
+DISCORD_GUILD_ID = "1558145560148443168"
+POLICE_PATROL_ROLE_ID = "1560442485879083108"
+DISCORD_REDIRECT_URI = "https://REPLACE-WITH-YOUR-WORKER.workers.dev/callback"
+ALLOWED_ORIGIN = "https://callmequack.github.io"
