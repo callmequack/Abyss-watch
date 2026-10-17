@@ -194,7 +194,7 @@ export default {
       if (!(image instanceof File) || !image.type.startsWith("image/")) return response(request, env, JSON.stringify({ error: "Attach a map image." }), 400, { "Content-Type": "application/json" });
       if (image.size > MAX_IMAGE_BYTES) return response(request, env, JSON.stringify({ error: "Image must be 8 MB or smaller." }), 413, { "Content-Type": "application/json" });
       const reportForm = new FormData();
-      discordForm.set("payload_json", JSON.stringify({ content: note ? "**" + title + "**\n" + note : "**" + title + "**", allowed_mentions: { parse: [] } }));
+      reportForm.set("payload_json", JSON.stringify({ content: note ? "**" + title + "**\n" + note : "**" + title + "**", allowed_mentions: { parse: [] } }));
       reportForm.set("files[0]", image, "abyss-danger-map.png");
       const sent = await fetch(env.DISCORD_WEBHOOK_URL, { method: "POST", body: reportForm });
       if (!sent.ok) return response(request, env, JSON.stringify({ error: "The report webhook could not accept the report." }), 502, { "Content-Type": "application/json" });
