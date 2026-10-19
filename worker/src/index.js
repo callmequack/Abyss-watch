@@ -188,6 +188,10 @@ export default {
         const result = await store.fetch("https://publisher.internal/list");
         return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       }
+      if (url.pathname === "/publisher-codes/history" && request.method === "GET") {
+        const result = await store.fetch("https://publisher.internal/history");
+        return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      }
       if (url.pathname === "/publisher-codes" && request.method === "POST") {
         let body;
         try { body = await request.json(); } catch { body = {}; }
@@ -217,8 +221,10 @@ export default {
       let validCode = suppliedCode.length >= 16 && suppliedCode === expectedCode;
       if (!validCode && suppliedCode.length >= 16) {
         const codeStore = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName("publisher-codes"));
-        const check = await codeStore.fetch("https://publisher.internal/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash: await hashCode(suppliedCode), now: Date.now() }) });
+        const suppliedHash = await hashCode(suppliedCode);
+        const check = await codeStore.fetch("https://publisher.internal/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash: suppliedHash, now: Date.now() }) });
         if (check.ok) { const result = await check.json(); validCode = result.valid === true; }
+        await codeStore.fetch("https://publisher.internal/audit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash: suppliedHash, at: Date.now(), outcome: validCode ? "accepted" : "rejected", reportTitle: "Publish report" }) });
       }
       if (!validCode) return response(request, env, JSON.stringify({ error: "Invalid or expired publishing code." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       const form = await request.formData();
@@ -242,6 +248,19 @@ export class LiveSession {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/history" && request.method === "GET") {
+      const events = await this.state.storage.get("publisherCodeHistory") || [];
+      return Response.json({ events: events.slice(-500).reverse() });
+    }
+    if (url.pathname === "/audit" && request.method === "POST") {
+      let data; try { data = await request.json(); } catch { return new Response("Invalid body", { status: 400 }); }
+      const records = await this.state.storage.get("publisherCodes") || [];
+      const matched = records.find(item => item.hash === data.hash);
+      const events = await this.state.storage.get("publisherCodeHistory") || [];
+      events.push({ at: Number(data.at) || Date.now(), publisherId: matched ? matched.id : null, label: matched ? matched.label : "Unknown code", codeHint: String(data.hash || "").slice(0, 12), outcome: data.outcome === "accepted" ? "accepted" : "rejected" });
+      await this.state.storage.put("publisherCodeHistory", events.slice(-2000));
+      return Response.json({ ok: true });
+    }
     if (url.pathname === "/list" && request.method === "GET") {
       const records = await this.state.storage.get("publisherCodes") || [];
       const now = Date.now();
