@@ -180,13 +180,47 @@ export default {
       const result = await stub.fetch("https://session.internal/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marks, updatedAt: Date.now(), updatedBy: canEdit ? "Shotcaller" : "Public link user" }) });
       return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     }
-        if (url.pathname === "/publish" && request.method === "POST") {
+        if (url.pathname.startsWith("/publisher-codes")) {
+      const suppliedAdmin = request.headers.get("X-Publish-Code") || "";
+      if (!env.PUBLISH_CODE || suppliedAdmin !== env.PUBLISH_CODE) return response(request, env, JSON.stringify({ error: "Admin authentication failed." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      const store = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName("publisher-codes"));
+      if (url.pathname === "/publisher-codes" && request.method === "GET") {
+        const result = await store.fetch("https://publisher.internal/list");
+        return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      }
+      if (url.pathname === "/publisher-codes" && request.method === "POST") {
+        let body;
+        try { body = await request.json(); } catch { body = {}; }
+        const label = String(body.label || "").trim().slice(0, 60);
+        const expiresAt = body.expiresAt === null ? null : Number(body.expiresAt);
+        if (!label) return response(request, env, JSON.stringify({ error: "Enter a name for this publisher code." }), 400, { "Content-Type": "application/json" });
+        if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) return response(request, env, JSON.stringify({ error: "Choose an expiry in the future, or select Never expires." }), 400, { "Content-Type": "application/json" });
+        const code = randomCode(18);
+        const record = { id: crypto.randomUUID(), label, hash: await hashCode(code), createdAt: Date.now(), expiresAt };
+        const saved = await store.fetch("https://publisher.internal/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(record) });
+        if (!saved.ok) return response(request, env, JSON.stringify({ error: "Could not save the publisher code." }), 500, { "Content-Type": "application/json" });
+        return response(request, env, JSON.stringify({ ok: true, code, publisher: { id: record.id, label, createdAt: record.createdAt, expiresAt, active: true } }), 201, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      }
+      const revokeMatch = url.pathname.match(/^\/publisher-codes\/([a-f0-9-]+)\/revoke$/i);
+      if (revokeMatch && request.method === "POST") {
+        const result = await store.fetch("https://publisher.internal/revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: revokeMatch[1] }) });
+        return response(request, env, await result.text(), result.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      }
+      return response(request, env, JSON.stringify({ error: "Not found" }), 404, { "Content-Type": "application/json" });
+    }
+    if (url.pathname === "/publish" && request.method === "POST") {
       const origin = request.headers.get("Origin");
       if (origin !== env.ALLOWED_ORIGIN) return response(request, env, JSON.stringify({ error: "Invalid origin" }), 403, { "Content-Type": "application/json" });
       const suppliedCode = request.headers.get("X-Publish-Code") || "";
       const expectedCode = env.PUBLISH_CODE || "";
       if (!expectedCode) return response(request, env, JSON.stringify({ error: "Publishing is not configured on the server yet." }), 503, { "Content-Type": "application/json" });
-      if (suppliedCode.length < 16 || suppliedCode !== expectedCode) return response(request, env, JSON.stringify({ error: "Invalid publishing code." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      let validCode = suppliedCode.length >= 16 && suppliedCode === expectedCode;
+      if (!validCode && suppliedCode.length >= 16) {
+        const codeStore = env.LIVE_SESSIONS.get(env.LIVE_SESSIONS.idFromName("publisher-codes"));
+        const check = await codeStore.fetch("https://publisher.internal/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash: await hashCode(suppliedCode), now: Date.now() }) });
+        if (check.ok) { const result = await check.json(); validCode = result.valid === true; }
+      }
+      if (!validCode) return response(request, env, JSON.stringify({ error: "Invalid or expired publishing code." }), 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       const form = await request.formData();
       const image = form.get("image");
       const title = String(form.get("title") || "Abyss danger report").slice(0, 100);
@@ -208,6 +242,34 @@ export class LiveSession {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/list" && request.method === "GET") {
+      const records = await this.state.storage.get("publisherCodes") || [];
+      const now = Date.now();
+      return Response.json({ codes: records.map(({ id, label, createdAt, expiresAt, revokedAt }) => ({ id, label, createdAt, expiresAt, revokedAt: revokedAt || null, active: !revokedAt && (!expiresAt || expiresAt > now) })).sort((a,b) => b.createdAt-a.createdAt) });
+    }
+    if (url.pathname === "/create" && request.method === "POST") {
+      let data; try { data = await request.json(); } catch { return new Response("Invalid body", { status: 400 }); }
+      if (!data.id || !data.hash || !data.label || !Number.isFinite(data.createdAt)) return new Response("Invalid publisher code", { status: 400 });
+      const records = await this.state.storage.get("publisherCodes") || [];
+      records.push({ id: data.id, label: String(data.label).slice(0,60), hash: data.hash, createdAt: data.createdAt, expiresAt: data.expiresAt ?? null, revokedAt: null });
+      await this.state.storage.put("publisherCodes", records);
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/revoke" && request.method === "POST") {
+      let data; try { data = await request.json(); } catch { return new Response("Invalid body", { status: 400 }); }
+      const records = await this.state.storage.get("publisherCodes") || [];
+      const record = records.find(item => item.id === data.id);
+      if (!record) return Response.json({ error: "Publisher code not found." }, { status: 404 });
+      record.revokedAt = Date.now();
+      await this.state.storage.put("publisherCodes", records);
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/validate" && request.method === "POST") {
+      let data; try { data = await request.json(); } catch { return new Response("Invalid body", { status: 400 }); }
+      const records = await this.state.storage.get("publisherCodes") || [];
+      const record = records.find(item => item.hash === data.hash && !item.revokedAt && (!item.expiresAt || item.expiresAt > (data.now || Date.now())));
+      return Response.json({ valid: Boolean(record) });
+    }
     if (url.pathname === "/join" && request.method === "POST") {
       let data;
       try { data = await request.json(); } catch { data = {}; }
