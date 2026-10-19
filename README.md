@@ -28,6 +28,10 @@ The backend source is in `worker/src/index.js`.
 - `PUBLISH_CODE`: private publishing credential, configured as a secret.
 - `DISCORD_WEBHOOK_URL`: webhook used only to deliver published reports.
 
+## Publisher code administration
+
+The private publisher management page is `/Abyss-watch/publisher-admin.html`. Sign in with the existing `PUBLISH_CODE` to create named individual publisher codes, choose an expiry, list status, and revoke codes. Individual codes are stored as SHA-256 hashes in the existing `LIVE_SESSIONS` Durable Object storage under a dedicated object name; no new Durable Object binding or migration is required. The admin code remains valid for publishing and admin access. New Worker code must be deployed from `worker/` with Wrangler before individual publisher codes will work.
+
 ## Private live sessions
 
 The separate route is `/Abyss-watch/Sessions/`. Private sessions create owner, viewer, and shotcaller codes. Viewer codes are read-only; shotcaller codes can edit; the owner can manage participants and rotate invitation codes. Public sessions allow anyone with the link to view and edit. No login or third-party account is required.
